@@ -1,0 +1,252 @@
+// MR Assistant — Phase 0 schema. See ARCHITECTURE.md for the reasoning.
+//
+// Conventions:
+// - Every table carries companyId. Tenant isolation is enforced in Phase 4;
+//   until then the column exists so no backfill migration is needed later.
+// - Event is an append-only ledger: rows are only written once final and are
+//   never updated. Corrections are new reversing events (reversesEventId).
+// - Event.type is a plain string validated by the Zod registry in
+//   lib/events.ts, not a DB enum, so adding/changing a type after the partner
+//   demo is a code change, not a migration.
+// - Room for later: RCPA = a new event type (chemistId already exists);
+//   tour plan = a new TourPlan table (plans are not events).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Neon: app traffic goes through the pooled (-pooler) endpoint; Prisma
+  // Migrate uses the direct endpoint, since PgBouncer transaction mode breaks
+  // session-level migration operations.
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// ── Org ────────────────────────────────────────────────────────────────────
+
+model Company {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+}
+
+model Territory {
+  id        String  @id @default(cuid())
+  companyId String
+  code      String
+  name      String
+  parentId  String? // HQ -> area -> region later; flat for MVP
+  parent    Territory?  @relation("TerritoryTree", fields: [parentId], references: [id])
+  children  Territory[] @relation("TerritoryTree")
+  users     User[]
+  doctors   Doctor[]
+  chemists  Chemist[]
+
+  @@unique([companyId, code])
+}
+
+enum Role {
+  MR
+  ABM
+  RBM
+  ADMIN
+}
+
+model User {
+  id          String     @id @default(cuid())
+  companyId   String
+  code        String
+  name        String
+  phone       String? // OTP login in Phase 4
+  role        Role
+  territoryId String?
+  territory   Territory? @relation(fields: [territoryId], references: [id])
+  managerId   String? // MR -> ABM -> RBM; joint_work candidates = this chain
+  manager     User?      @relation("ReportsTo", fields: [managerId], references: [id])
+  reports     User[]     @relation("ReportsTo")
+  createdAt   DateTime   @default(now())
+
+  @@unique([companyId, code])
+}
+
+// ── Master data (admin CSV upload) ─────────────────────────────────────────
+
+enum RecordStatus {
+  ACTIVE
+  PENDING_APPROVAL // MR-added doctor, waiting for manager
+  REJECTED
+}
+
+model Doctor {
+  id           String       @id @default(cuid())
+  companyId    String
+  territoryId  String
+  territory    Territory    @relation(fields: [territoryId], references: [id])
+  externalCode String? // from the CSV; makes re-upload idempotent
+  name         String
+  specialty    String?
+  clinic       String?
+  area         String?
+  status       RecordStatus @default(ACTIVE)
+  createdById  String?
+  createdAt    DateTime     @default(now())
+
+  @@unique([companyId, externalCode])
+  @@index([companyId, territoryId, status])
+}
+
+model Chemist {
+  id           String       @id @default(cuid())
+  companyId    String
+  territoryId  String
+  territory    Territory    @relation(fields: [territoryId], references: [id])
+  externalCode String?
+  name         String
+  area         String?
+  status       RecordStatus @default(ACTIVE)
+
+  @@unique([companyId, externalCode])
+}
+
+model Product {
+  id          String        @id @default(cuid())
+  companyId   String
+  code        String
+  brandName   String // "Zentapra-40"
+  composition String?
+  baseUnit    String // "strip" | "sachet" | "bottle": sample stock is counted in this
+  active      Boolean       @default(true)
+  units       ProductUnit[]
+
+  @@unique([companyId, code])
+}
+
+// Unit conversion master: 1 box of Zentapra-40 = 10 strips.
+// Conversion is always done by code from this table, never by the LLM.
+model ProductUnit {
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  unit      String // "box"
+  toBase    Int // 10
+
+  @@id([productId, unit])
+}
+
+// Learned from MR confirm cards (userId set) or admin-entered (userId null).
+model Alias {
+  id         String   @id @default(cuid())
+  companyId  String
+  entityType String // "doctor" | "product" | "chemist" | "manager"
+  entityId   String
+  userId     String? // the MR it applies to; null = company-wide
+  alias      String // normalized, e.g. "sharma ji"
+  createdAt  DateTime @default(now())
+
+  @@unique([companyId, entityType, userId, alias])
+}
+
+// ── Pipeline ───────────────────────────────────────────────────────────────
+
+enum Channel {
+  WEB_TEXT
+  WEB_VOICE
+  WHATSAPP
+  ADMIN // admin manual entry (sample_received), so every Event has a source Message
+}
+
+enum MessageStatus {
+  RECEIVED
+  PROCESSED
+  NEEDS_REVIEW
+  FAILED
+  DISCARDED // MR confirmed it was a duplicate / not a real note
+}
+
+model Message {
+  id               String        @id // client-generated at RECORDING time = idempotency key
+  companyId        String
+  mrId             String
+  channel          Channel
+  recordedAt       DateTime // the "note date" that "kal" / "next week" resolve against (in IST)
+  // TODO(before real pilot): text/transcript/audio may contain patient names.
+  // Kept raw for the demo only; mask or apply a retention limit before any real pilot.
+  text             String // what was finally submitted
+  transcript       String? // raw Sarvam output, never edited
+  audioKey         String? // Phase 2
+  status           MessageStatus @default(RECEIVED)
+  errorReason      String?
+  extraction       Json? // Zod-validated LLM output = the proposed events
+  rawModelOutput   Json?
+  adverseEventFlag Boolean       @default(false) // routed to manager; no patient identifiers
+  model            String? // provider/model that processed it
+  promptVersion    String?
+  createdAt        DateTime      @default(now())
+  processedAt      DateTime?
+  events           Event[]
+  reviewItems      ReviewItem[]
+
+  @@index([companyId, mrId, recordedAt])
+  @@index([companyId, status])
+}
+
+model ReviewItem {
+  id           String    @id @default(cuid())
+  companyId    String
+  messageId    String
+  message      Message   @relation(fields: [messageId], references: [id])
+  // DOCTOR_AMBIGUOUS | DOCTOR_NOT_FOUND | PRODUCT_AMBIGUOUS | PRODUCT_NOT_FOUND
+  // | MANAGER_AMBIGUOUS | QUANTITY_MISSING | UNIT_UNKNOWN | LOW_CONFIDENCE
+  // | POSSIBLE_DUPLICATE_VISIT | CORRECTION_REQUESTED | STOCK_INSUFFICIENT
+  // | ADVERSE_EVENT
+  kind         String
+  path         String? // which proposed item in message.extraction, e.g. "visits[0].samples[1]"
+  rawMention   String?
+  candidates   Json? // [{id, label, score}] -> the one-tap card
+  assignee     String // "MR" first; "MANAGER" for leftovers, doctor approval, adverse events
+  detail       String? // the question shown on the card
+  blocking     Boolean   @default(true) // false = informational (e.g. ADVERSE_EVENT): doesn't hold the DCR
+  status       String    @default("OPEN") // OPEN | RESOLVED | DISMISSED
+  resolution   Json?
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([companyId, assignee, status])
+  @@index([messageId])
+}
+
+// Append-only ledger. Only final facts live here, so derived views (DCR,
+// sample stock, follow-ups) never need to filter by message status.
+model Event {
+  id              String   @id @default(cuid())
+  companyId       String
+  mrId            String
+  messageId       String // ALWAYS set: admin entries and UI corrections create a Message too
+  message         Message  @relation(fields: [messageId], references: [id])
+  type            String // see lib/events.ts registry
+  schemaVersion   Int      @default(1)
+  occurredAt      DateTime // resolved by code (IST rules), never by the LLM
+  occurredOn      String // IST calendar date "YYYY-MM-DD" — DCR grouping without timezone bugs
+  visitEventId    String? // the doctor_visit this event belongs to -> one DCR row
+  visitEvent      Event?   @relation("VisitChildren", fields: [visitEventId], references: [id])
+  children        Event[]  @relation("VisitChildren")
+  doctorId        String?
+  productId       String?
+  chemistId       String?
+  managerId       String? // joint_work
+  stockDelta      Int? // signed, in Product.baseUnit; set by code only
+  payload         Json // per-type, Zod-validated (lib/events.ts)
+  confidence      Float?
+  reversesEventId String?  @unique // a correction reverses an event at most once
+  reverses        Event?   @relation("Reversal", fields: [reversesEventId], references: [id])
+  reversedBy      Event?   @relation("Reversal")
+  createdAt       DateTime @default(now())
+
+  @@index([companyId, mrId, occurredOn])
+  @@index([doctorId, occurredAt])
+  @@index([mrId, productId])
+  @@index([messageId])
+}
