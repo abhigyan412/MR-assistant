@@ -37,6 +37,22 @@ The UI has three tabs (no login until Phase 4 — pick who you are):
 - **Manager** — adverse-event cards, MR-added doctors to approve, MR cards still open.
 - **Admin** — log samples sent to an MR (stock-in).
 
+## Demo data and deployment
+
+- **Neon branches:** `production` (the app's `DATABASE_URL` locally), `demo`
+  (Varanasi demo world, used by the Vercel deployment), `test` (DB tests,
+  expires after 7 days).
+- **Reset the demo:** `npm run demo:reset` wipes the `demo` branch and loads
+  the Varanasi data (`prisma/demo-data.ts`). It reads
+  `DEMO_DATABASE_URL_UNPOOLED` from `.env` and refuses to run against the
+  app's `DATABASE_URL`.
+- **Vercel:** project `mr-assistant`, connected to this GitHub repo; every
+  push to `main` deploys. Functions run in `cle1` (Cleveland = AWS
+  us-east-2, the same region as the Neon database; see `vercel.json`).
+  Production env: `DATABASE_URL`/`DATABASE_URL_UNPOOLED` (demo branch),
+  `OPENAI_API_KEY`, `LLM_*`, `SARVAM_API_KEY`. The build runs
+  `prisma migrate deploy` first (`vercel-build`).
+
 ## Tests
 
 ```bash

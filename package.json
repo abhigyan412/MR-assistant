@@ -12,7 +12,8 @@
     "postinstall": "prisma generate",
     "vercel-build": "prisma migrate deploy && next build",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "demo:reset": "tsx scripts/demo-reset.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
