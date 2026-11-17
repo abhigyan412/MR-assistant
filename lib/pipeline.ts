@@ -13,6 +13,7 @@ import {
   ProviderTimeoutError,
   type ExtractionProvider,
 } from "./llm";
+import { messageAudioPrefix } from "./audio";
 import { aliasKey } from "./matching";
 
 // Message pipeline (ARCHITECTURE.md §Pipeline):
@@ -35,6 +36,8 @@ export interface ProcessNoteInput {
   recordedAt: Date;
   channel: Channel;
   transcript?: string | null;
+  // Voice notes: segments already stored under audio/<messageId>/ by /api/voice/transcribe.
+  audio?: { mime: string; segments: number; durationMs: number; sttModel: string } | null;
 }
 
 const messageInclude = {
@@ -65,6 +68,15 @@ export async function processNote(
         recordedAt: input.recordedAt,
         text: input.text,
         transcript: input.transcript ?? null,
+        ...(input.audio
+          ? {
+              audioKey: messageAudioPrefix(input.messageId),
+              audioMime: input.audio.mime,
+              audioSegments: input.audio.segments,
+              audioDurationMs: input.audio.durationMs,
+              sttModel: input.audio.sttModel,
+            }
+          : {}),
         status: "RECEIVED",
       },
     });

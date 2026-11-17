@@ -20,5 +20,5 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   // Everything except the unlock page/endpoint and static assets.
-  matcher: ["/((?!unlock|api/unlock|_next/static|_next/image|favicon.ico|icon|robots.txt).*)"],
+  matcher: ["/((?!unlock|api/unlock|api/cron|_next/static|_next/image|favicon.ico|icon|robots.txt).*)"],
 };

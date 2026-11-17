@@ -13,7 +13,15 @@ const PostSchema = z.object({
   mrId: z.string().min(1),
   text: z.string().trim().min(1).max(4000),
   recordedAt: z.string().datetime({ offset: true }).optional(),
-  transcript: z.string().max(8000).optional(),
+  transcript: z.string().max(8000).optional(), // raw speech-to-text output, never edited
+  audio: z
+    .object({
+      mime: z.string().max(100),
+      segments: z.number().int().min(1).max(8),
+      durationMs: z.number().int().min(0).max(10 * 60_000),
+      sttModel: z.string().max(50),
+    })
+    .optional(),
 });
 
 // POST /api/messages — submit a note. Idempotent on messageId.
@@ -26,6 +34,7 @@ export async function POST(request: Request) {
       mrId: input.mrId,
       text: input.text,
       transcript: input.transcript ?? null,
+      audio: input.audio ?? null,
       recordedAt: input.recordedAt ? new Date(input.recordedAt) : new Date(),
       channel: input.transcript ? "WEB_VOICE" : "WEB_TEXT",
     });

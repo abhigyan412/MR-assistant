@@ -1,21 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, NetworkError, newId, STALE_PROCESSING_MS, todayIst, type Catalog, type Dcr, type Message, type StockRow } from "../client";
+import { api, NetworkError, newId, STALE_PROCESSING_MS, todayIst, type Catalog, type Dcr, type Message, type NoteBody, type StockRow } from "../client";
 import { DcrView } from "./DcrView";
 import { ReviewCard } from "./ReviewCard";
+import { VoiceRecorder, type VoiceResult } from "./VoiceRecorder";
 
 // An unsent draft survives a reload / dropped connection on this device.
 const DRAFT_KEY = "mr-assistant:draft";
-function loadDraft(): { id: string; text: string } | null {
+type Voice = Pick<VoiceResult, "transcript" | "audio">;
+type Draft = { id: string; text: string; voice?: Voice | null };
+function loadDraft(): Draft | null {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
-    return raw ? (JSON.parse(raw) as { id: string; text: string }) : null;
+    return raw ? (JSON.parse(raw) as Draft) : null;
   } catch {
     return null;
   }
 }
-function saveDraft(d: { id: string; text: string } | null) {
+function saveDraft(d: Draft | null) {
   try {
     if (d && d.text.trim()) localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
     else localStorage.removeItem(DRAFT_KEY);
@@ -46,8 +49,10 @@ export function MrView({ mrId }: { mrId: string }) {
   // The message id is created when the MR STARTS a note (on WhatsApp/voice:
   // when recording starts), so any retry of the same note reuses it.
   const draftId = useRef<string | null>(null);
-  const last = useRef<{ messageId: string; text: string; recordedAt: string } | null>(null);
+  const last = useRef<NoteBody | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // The current note came from the mic: raw transcript + audio info travel with it.
+  const [voice, setVoice] = useState<Voice | null>(null);
 
   // Restore an unsent draft (same id, so sending it later can't double count).
   useEffect(() => {
@@ -55,6 +60,7 @@ export function MrView({ mrId }: { mrId: string }) {
     if (d) {
       draftId.current = d.id;
       setText(d.text);
+      setVoice(d.voice ?? null);
     }
   }, []);
 
@@ -93,7 +99,7 @@ export function MrView({ mrId }: { mrId: string }) {
   }
 
   /** Returns true when the server has the note (whatever its status), false when it never arrived. */
-  async function send(payload: { messageId: string; text: string; recordedAt: string }): Promise<boolean> {
+  async function send(payload: NoteBody): Promise<boolean> {
     setSending(true);
     setToast(null);
     try {
@@ -139,25 +145,59 @@ export function MrView({ mrId }: { mrId: string }) {
     <div className="layout">
       <section>
         <h2>New note</h2>
+        <VoiceRecorder
+          mrId={mrId}
+          disabled={sending}
+          onStart={() => {
+            // Recording starts the note (unless the MR already started typing it).
+            if (!draftId.current) draftId.current = newId();
+            return draftId.current;
+          }}
+          onResult={(r) => {
+            if (!r.transcript) return;
+            const nextText = text.trim() ? `${text.trim()} ${r.transcript}` : r.transcript;
+            // Several recordings for one note: keep every raw transcript, sum the audio.
+            const nextVoice: Voice = voice
+              ? {
+                  transcript: `${voice.transcript} ${r.transcript}`.trim(),
+                  audio: { ...r.audio, segments: voice.audio.segments + r.audio.segments, durationMs: voice.audio.durationMs + r.audio.durationMs },
+                }
+              : { transcript: r.transcript, audio: r.audio };
+            setText(nextText);
+            setVoice(nextVoice);
+            saveDraft({ id: draftId.current!, text: nextText, voice: nextVoice });
+          }}
+        />
         <textarea
           rows={4}
           value={text}
-          placeholder="e.g. Dr. Verma ko Zentapra detail kiya, 3 strip sample diye, next week follow up"
+          placeholder="Bolo ya likho / Speak or type — e.g. Tiwari sir ko Gastrova detail kiya, 3 strip diye, Friday follow up"
           onChange={(e) => {
             if (!draftId.current && e.target.value.trim()) draftId.current = newId();
             setText(e.target.value);
-            saveDraft(draftId.current ? { id: draftId.current, text: e.target.value } : null);
+            saveDraft(draftId.current ? { id: draftId.current, text: e.target.value, voice } : null);
           }}
         />
+        {voice && (
+          <p className="muted small">
+            🎤 Heard: “{voice.transcript}” — edit the text above if anything is wrong.
+          </p>
+        )}
         <div className="row">
           <button
             className="primary"
             disabled={sending || !text.trim()}
             onClick={async () => {
-              const payload = { messageId: draftId.current ?? newId(), text: text.trim(), recordedAt: new Date().toISOString() };
+              const payload: NoteBody = {
+                messageId: draftId.current ?? newId(),
+                text: text.trim(),
+                recordedAt: new Date().toISOString(),
+                ...(voice ? { transcript: voice.transcript, audio: voice.audio } : {}),
+              };
               draftId.current = payload.messageId;
               if (await send(payload)) {
                 setText("");
+                setVoice(null);
                 draftId.current = null;
                 saveDraft(null);
               }
@@ -186,7 +226,10 @@ export function MrView({ mrId }: { mrId: string }) {
             <li key={m.id}>
               <span className={`badge status-${m.status}`}>{STATUS_LABEL[m.status]}</span>
               {m.adverseEventFlag && <span className="badge warn">AE flagged</span>}
+              {m.channel === "WEB_VOICE" && <span className="badge">🎤 Voice</span>}
               <span className="msg-text">{m.text}</span>
+              {m.transcript && m.transcript.trim() !== m.text.trim() && <span className="heard">Heard: “{m.transcript}”</span>}
+              {m.audioKey && <AudioPlayback messageId={m.id} />}
               {m.status === "FAILED" && <span className="error"> {m.errorReason}</span>}
               {isStale(m) && <span className="error"> Taking too long — it may have been interrupted.</span>}
               {(m.status === "FAILED" || isStale(m)) && (
@@ -222,5 +265,34 @@ export function MrView({ mrId }: { mrId: string }) {
         </table>
       </section>
     </div>
+  );
+}
+
+/** Plays a voice note's recorded segments (short-lived signed URLs, fetched on demand). */
+function AudioPlayback({ messageId }: { messageId: string }) {
+  const [urls, setUrls] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (urls)
+    return urls.length ? (
+      <span className="playback">
+        {urls.map((u, i) => (
+          <audio key={u} controls preload="none" src={u} aria-label={"Recording part " + (i + 1)} />
+        ))}
+      </span>
+    ) : (
+      <span className="muted small"> Recording deleted (retention).</span>
+    );
+  return (
+    <button
+      className="link"
+      onClick={() =>
+        api
+          .audioUrls(messageId)
+          .then((r) => setUrls(r.urls))
+          .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load audio"))
+      }
+    >
+      {error ?? "▶ Play recording"}
+    </button>
   );
 }

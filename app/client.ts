@@ -36,8 +36,22 @@ export interface Message {
   createdAt: string;
   attempts: number;
   lastAttemptAt: string;
+  channel: "WEB_TEXT" | "WEB_VOICE" | "WHATSAPP" | "ADMIN";
+  transcript: string | null; // raw speech-to-text, never edited
+  audioKey: string | null;
+  audioSegments: number | null;
+  audioDurationMs: number | null;
   reviewItems: ReviewItem[];
   _count?: { events: number };
+}
+
+/** What the MR submits for one note. Voice notes add the raw transcript + audio info. */
+export interface NoteBody {
+  messageId: string;
+  text: string;
+  recordedAt: string;
+  transcript?: string;
+  audio?: { mime: string; segments: number; durationMs: number; sttModel: string };
 }
 
 export interface Catalog {
@@ -118,8 +132,26 @@ const post = <T>(url: string, body: unknown) => call<T>(url, { method: "POST", b
 export const api = {
   users: () => call<Person[]>("/api/users"),
   messages: (mrId: string) => call<Message[]>(`/api/messages?mrId=${encodeURIComponent(mrId)}`),
-  sendNote: (body: { messageId: string; mrId: string; text: string; recordedAt: string }) =>
+  sendNote: (body: NoteBody & { mrId: string }) =>
     post<{ message: Message; isDuplicate: boolean }>("/api/messages", body),
+  transcribe: async (p: { audio: Blob; messageId: string; segment: number; mrId: string }) => {
+    const form = new FormData();
+    form.append("audio", p.audio, `segment.${p.audio.type.includes("mp4") ? "m4a" : "webm"}`);
+    form.append("messageId", p.messageId);
+    form.append("segment", String(p.segment));
+    form.append("mrId", p.mrId);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 40_000);
+    try {
+      const res = await fetch("/api/voice/transcribe", { method: "POST", body: form, signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string }).error ?? `Transcription failed (${res.status})`);
+      return data as { segment: number; transcript: string; model: string; stored: boolean };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  audioUrls: (messageId: string) => call<{ urls: string[] }>(`/api/messages/${encodeURIComponent(messageId)}/audio`),
   retry: (messageId: string) => post<Message>(`/api/messages/${encodeURIComponent(messageId)}/retry`, {}),
   recheck: (messageId: string) => post<Message>(`/api/messages/${encodeURIComponent(messageId)}/recheck`, {}),
   resolve: (itemId: string, actorId: string, resolution: unknown) =>

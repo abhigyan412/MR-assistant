@@ -175,7 +175,11 @@ model Message {
   // Kept raw for the demo only; mask or apply a retention limit before any real pilot.
   text             String // what was finally submitted
   transcript       String? // raw Sarvam output, never edited
-  audioKey         String? // Phase 2
+  audioKey         String? // object-storage prefix "audio/<message id>/" (segments 00, 01, …); null after retention cleanup
+  audioMime        String? // as recorded: audio/webm (Android Chrome), audio/mp4 (iOS Safari)
+  audioSegments    Int? // ~25 s pieces (Sarvam's sync API takes ≤30 s each)
+  audioDurationMs  Int?
+  sttModel         String? // e.g. "saaras:v4"
   status           MessageStatus @default(RECEIVED)
   errorReason      String?
   extraction       Json? // Zod-validated LLM output = the proposed events
