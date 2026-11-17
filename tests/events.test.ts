@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { EVENT_TYPE_NAMES, validateEventDraft } from "@/lib/events";
 
 describe("event registry", () => {
-  it("has the 7 MVP types plus admin-only sample_received", () => {
+  it("has the 7 MVP types plus the non-LLM stock types (sample_received, stock_adjusted)", () => {
     expect(EVENT_TYPE_NAMES.sort()).toEqual(
-      ["doctor_query", "doctor_visit", "follow_up", "joint_work", "pob", "product_detailed", "sample_given", "sample_received"].sort()
+      ["doctor_query", "doctor_visit", "follow_up", "joint_work", "pob", "product_detailed", "sample_given", "sample_received", "stock_adjusted"].sort()
     );
   });
 

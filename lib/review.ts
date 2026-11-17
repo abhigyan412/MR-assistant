@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { loadMrContext } from "./context";
-import type { ReviewKind } from "./interpret";
+import { istDate } from "./dates";
+import { validateEventDraft } from "./events";
+import type { ReviewKind, StockProposal } from "./interpret";
 import { aliasKey } from "./matching";
 import { evaluateMessage, NotFoundError, type MessageWithDetails } from "./pipeline";
 
@@ -28,6 +30,8 @@ export const ResolutionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("reverse"), eventIds: z.array(z.string().min(1)).min(1) }),
   z.object({ action: z.literal("notCorrection") }),
   z.object({ action: z.literal("acknowledge") }),
+  z.object({ action: z.literal("approve") }),
+  z.object({ action: z.literal("reject") }),
   z.object({
     action: z.literal("newDoctor"),
     name: z.string().trim().min(2),
@@ -52,6 +56,7 @@ const ALLOWED: Record<ReviewKind, ResolutionInput["action"][]> = {
   POSSIBLE_DUPLICATE_VISIT: ["secondVisit", "sameVisit"],
   CORRECTION_REQUESTED: ["reverse", "notCorrection", "discard"],
   ADVERSE_EVENT: ["acknowledge"],
+  STOCK_REPORT: ["approve", "reject"],
 };
 
 export async function resolveReviewItem(
@@ -75,6 +80,13 @@ export async function resolveReviewItem(
 
   const message = item.message;
   const now = new Date();
+
+  // Manager decision on an MR's stock report: the stock event is written
+  // only on approval, and stock can never go below zero.
+  if (kind === "STOCK_REPORT") {
+    await decideStockReport(prisma, item.id, item.proposal as StockProposal | null, message, actorId, resolution.action === "approve");
+    return evaluateMessage(prisma, message.id);
+  }
 
   // Throwing the note away (wrong note, or the same visit sent twice).
   if (resolution.action === "discard" || resolution.action === "sameVisit") {
@@ -177,4 +189,80 @@ export async function decideDoctor(prisma: PrismaClient, doctorId: string, actor
   if (doctor.status !== "PENDING_APPROVAL") throw new ReviewError(`Doctor is already ${doctor.status}`);
   // TODO(Phase 3): on reject, reverse the events already logged against this doctor.
   return prisma.doctor.update({ where: { id: doctorId }, data: { status: approve ? "ACTIVE" : "REJECTED" } });
+}
+
+async function decideStockReport(
+  prisma: PrismaClient,
+  itemId: string,
+  proposal: StockProposal | null,
+  message: { id: string; companyId: string; mrId: string; recordedAt: Date },
+  actorId: string,
+  approve: boolean
+) {
+  if (!proposal) throw new ReviewError("This stock report has no proposal");
+  const now = new Date();
+  await prisma.$transaction(
+    async (tx) => {
+      const claimed = await tx.reviewItem.updateMany({
+        where: { id: itemId, status: "OPEN" },
+        data: { status: "RESOLVED", resolution: { action: approve ? "approve" : "reject" }, resolvedById: actorId, resolvedAt: now },
+      });
+      if (claimed.count !== 1) throw new ReviewError("Review item is already RESOLVED");
+      if (!approve) return;
+
+      if (proposal.direction === "out") {
+        const bal = await tx.event.aggregate({
+          where: { mrId: message.mrId, productId: proposal.productId },
+          _sum: { stockDelta: true },
+        });
+        const available = bal._sum.stockDelta ?? 0;
+        if (proposal.baseQuantity > available) {
+          throw new ReviewError(`Can't approve: the MR's ${proposal.productName} stock is now ${available}, the report removes ${proposal.baseQuantity}.`);
+        }
+      }
+      const draft =
+        proposal.direction === "received"
+          ? {
+              type: "sample_received",
+              payload: {
+                quantity: proposal.quantity,
+                unit: proposal.unit,
+                note: `Reported by MR ("${proposal.mention}"), approved`,
+                source: "mr_report",
+                approvedById: actorId,
+              },
+              productId: proposal.productId,
+              stockDelta: proposal.baseQuantity,
+            }
+          : {
+              type: "stock_adjusted",
+              payload: {
+                quantity: proposal.quantity,
+                unit: proposal.unit,
+                reason: proposal.reason ?? "unspecified",
+                rawProductMention: proposal.mention,
+                approvedById: actorId,
+              },
+              productId: proposal.productId,
+              stockDelta: -proposal.baseQuantity,
+            };
+      const { schemaVersion, payload } = validateEventDraft(draft);
+      await tx.event.create({
+        data: {
+          companyId: message.companyId,
+          mrId: message.mrId,
+          messageId: message.id,
+          type: draft.type,
+          schemaVersion,
+          // When it physically happened = when the MR reported it.
+          occurredAt: message.recordedAt,
+          occurredOn: istDate(message.recordedAt),
+          productId: draft.productId,
+          stockDelta: draft.stockDelta,
+          payload: payload as Prisma.InputJsonValue,
+        },
+      });
+    },
+    { isolationLevel: "Serializable" } // two approvals can't both spend the same stock
+  );
 }

@@ -84,5 +84,6 @@ export function sanitizeRefs(extraction: Extraction, ctx: MrContext): { extracti
     call.chemist = check("chemist", call.chemist);
     for (const p of call.pobs) p.product = check("product", p.product);
   }
+  for (const sr of copy.stockReports) sr.product = check("product", sr.product);
   return { extraction: copy, unknownRefs };
 }

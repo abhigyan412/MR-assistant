@@ -89,14 +89,30 @@ export const EVENT_TYPES = {
     llmExtracted: true,
   },
   sample_received: {
-    version: 1,
+    version: 2, // v2: source "mr_report" (MR reported, manager approved) + approvedById
     payload: z.object({
       quantity: z.number().int().positive(),
       unit: nonEmpty,
       note: z.string().nullable(),
-      source: z.enum(["opening_stock", "admin_entry", "dispatch_file"]),
+      source: z.enum(["opening_stock", "admin_entry", "dispatch_file", "mr_report"]),
+      approvedById: z.string().optional(), // set for mr_report
     }),
-    // Admin-only: never produced by the LLM.
+    // Admin entry, or an MR report written only after a manager approves it.
+    requires: ["productId", "stockDelta"],
+    stockMoving: true,
+    llmExtracted: false,
+  },
+  stock_adjusted: {
+    version: 1,
+    payload: z.object({
+      quantity: z.number().int().positive(),
+      unit: nonEmpty,
+      reason: z.enum(["expired", "damaged", "returned", "lost", "unspecified"]),
+      rawProductMention: nonEmpty,
+      approvedById: nonEmpty,
+    }),
+    // Sample stock going out NOT to a doctor (MR report, manager approved).
+    // stockDelta is negative; stock never goes below zero (checked on approval).
     requires: ["productId", "stockDelta"],
     stockMoving: true,
     llmExtracted: false,
@@ -155,6 +171,9 @@ export function validateEventDraft(draft: EventDraft): { schemaVersion: number; 
   }
   if (draft.type === "sample_received" && !draft.reversesEventId && (draft.stockDelta ?? 0) <= 0) {
     throw new Error("sample_received must have a positive stockDelta");
+  }
+  if (draft.type === "stock_adjusted" && !draft.reversesEventId && (draft.stockDelta ?? 0) >= 0) {
+    throw new Error("stock_adjusted must have a negative stockDelta");
   }
   return { schemaVersion: def.version, payload: parsed.data };
 }

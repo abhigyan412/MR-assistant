@@ -21,6 +21,7 @@ const TITLES: Record<string, string> = {
   POSSIBLE_DUPLICATE_VISIT: "Already logged?",
   CORRECTION_REQUESTED: "Correct an earlier entry",
   ADVERSE_EVENT: "Possible adverse event",
+  STOCK_REPORT: "Stock report — approve?",
 };
 
 export function ReviewCard({
@@ -267,6 +268,18 @@ export function ReviewCard({
             </button>
           </div>
         </>
+      );
+      break;
+    case "STOCK_REPORT":
+      body = (
+        <div className="row">
+          <button className="primary" disabled={busy} onClick={() => answer({ action: "approve" })}>
+            Approve
+          </button>
+          <button disabled={busy} onClick={() => answer({ action: "reject" })}>
+            Reject
+          </button>
+        </div>
       );
       break;
     case "ADVERSE_EVENT":

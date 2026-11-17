@@ -22,7 +22,8 @@ export type ReviewKind =
   | "POSSIBLE_DUPLICATE_VISIT"
   | "CORRECTION_REQUESTED"
   | "STOCK_INSUFFICIENT"
-  | "ADVERSE_EVENT";
+  | "ADVERSE_EVENT"
+  | "STOCK_REPORT"; // manager approves an MR's stock received / stock out
 
 export type Resolution =
   | { action: "pick"; id: string }
@@ -35,7 +36,21 @@ export type Resolution =
   | { action: "reverse"; eventIds: string[] }
   | { action: "notCorrection" }
   | { action: "acknowledge" }
+  | { action: "approve" }
+  | { action: "reject" }
   | { action: "newDoctor"; name: string; specialty: string | null; area: string | null };
+
+/** What a STOCK_REPORT card asks the manager to approve. */
+export interface StockProposal {
+  direction: "received" | "out";
+  reason: "expired" | "damaged" | "returned" | "lost" | "unspecified" | null;
+  productId: string;
+  productName: string;
+  mention: string;
+  quantity: number;
+  unit: string;
+  baseQuantity: number;
+}
 
 export interface ReviewDraft {
   kind: ReviewKind;
@@ -45,6 +60,7 @@ export interface ReviewDraft {
   assignee: "MR" | "MANAGER";
   blocking: boolean;
   detail: string;
+  proposal?: StockProposal;
 }
 
 export interface RecentSample {
@@ -112,6 +128,7 @@ export interface PlannedChemistCall {
 export interface Plan {
   visits: PlannedVisit[];
   chemistCalls: PlannedChemistCall[];
+  stockReports: (StockProposal & { path: string })[]; // become STOCK_REPORT cards, not events
   reversals: string[]; // event ids to reverse (corrections)
 }
 
@@ -132,7 +149,7 @@ export function interpret(input: InterpretInput): InterpretResult {
   const resolved = <A extends Resolution["action"]>(path: string, action: A) =>
     resolutionsAt(path).find((r): r is Extract<Resolution, { action: A }> => r.action === action);
 
-  const plan: Plan = { visits: [], chemistCalls: [], reversals: [] };
+  const plan: Plan = { visits: [], chemistCalls: [], stockReports: [], reversals: [] };
 
   // ── entity resolution helpers ─────────────────────────────────────────
   function product(path: string, mention: string, llmRef: string | null): CtxProduct | null | "dropped" {
@@ -368,6 +385,25 @@ export function interpret(input: InterpretInput): InterpretResult {
     });
   });
 
+  // ── stock reports (MR's own stock, outside a visit) ──────────────────
+  extraction.stockReports.forEach((sr, i) => {
+    const path = `stockReports[${i}]`;
+    if (resolved(path, "drop")) return;
+    const r = product(`${path}.product`, sr.product.mention, sr.product.ref);
+    if (!r || r === "dropped") return;
+    const q = quantity(path, r, sr);
+    if (!q) return;
+    plan.stockReports.push({
+      path,
+      direction: sr.kind,
+      reason: sr.kind === "out" ? (sr.reason ?? "unspecified") : null,
+      productId: r.id,
+      productName: r.brandName,
+      mention: sr.product.mention,
+      ...q,
+    });
+  });
+
   // ── corrections ──────────────────────────────────────────────────────
   if (extraction.correction.isCorrection) {
     const reverse = resolved("message", "reverse");
@@ -418,6 +454,18 @@ export function interpret(input: InterpretInput): InterpretResult {
       });
     })
   );
+  // Stock reported out (expired, damaged, …) needs stock too.
+  for (const sr of plan.stockReports) {
+    if (sr.direction !== "out") continue;
+    const cur = needed.get(sr.productId);
+    const p = ctx.products.find((x) => x.id === sr.productId);
+    needed.set(sr.productId, {
+      qty: (cur?.qty ?? 0) + sr.baseQuantity,
+      path: cur?.path ?? sr.path,
+      name: sr.productName,
+      units: p ? unitChoices(p) : [],
+    });
+  }
   for (const [productId, need] of needed) {
     const available = (input.stock.get(productId) ?? 0) + (reversedBack.get(productId) ?? 0);
     if (need.qty > available) {
@@ -448,6 +496,28 @@ export function interpret(input: InterpretInput): InterpretResult {
   // A generic "please check" adds nothing once the MR is already asked
   // specific questions about this note (or has answered some): they are
   // looking at it anyway. It only stands alone on an otherwise clean note.
+  // Stock reports go to the manager only once the note itself is clean, so
+  // the proposal on the card is final (quantity/product questions first).
+  if (!reviews.some((r) => r.blocking)) {
+    for (const sr of plan.stockReports) {
+      const { path, ...proposal } = sr;
+      const what = `${sr.quantity} ${sr.unit} ${sr.productName}`;
+      reviews.push({
+        kind: "STOCK_REPORT",
+        path,
+        rawMention: sr.mention,
+        candidates: null,
+        assignee: "MANAGER",
+        blocking: false,
+        proposal,
+        detail:
+          sr.direction === "received"
+            ? `Stock received: +${what}. Approve to add it to the MR's sample stock.`
+            : `Stock out (${sr.reason}): −${what}. Approve to remove it from the MR's sample stock.`,
+      });
+    }
+  }
+
   const specific = reviews.some((r) => r.kind !== "LOW_CONFIDENCE" && r.blocking);
   const final = specific || input.resolutions.length > 0 ? reviews.filter((r) => r.kind !== "LOW_CONFIDENCE") : reviews;
 

@@ -56,6 +56,7 @@ function n01(overrides: Partial<Extraction["visits"][number]> = {}): Extraction 
       },
     ],
     chemistCalls: [],
+    stockReports: [],
     adverseEvent: { mentioned: false, summary: null },
     correction: { isCorrection: false, description: null },
   };

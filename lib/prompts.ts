@@ -2,7 +2,7 @@ import type { MrContext } from "./context";
 
 // Bump when the prompt changes; stored on every Message for the audit trail
 // and on every eval result so scores are comparable across versions.
-export const PROMPT_VERSION = "mr-extract-v2";
+export const PROMPT_VERSION = "mr-extract-v3";
 
 // Stable across all MRs and days -> first in the prompt, cacheable.
 export const SYSTEM_PROMPT = `You turn short field notes from Indian pharmaceutical Medical Representatives (MRs) into structured data. An MR writes or speaks a note right after visiting doctors, usually in Hinglish (Hindi and English mixed, Latin script), sometimes in English or Devanagari. Notes are informal, misspelled, and often transcribed from speech, so brand and doctor names may be distorted.
@@ -36,6 +36,13 @@ visits: one entry per doctor the MR visited or tried to visit.
 
 chemistCalls: visits to a chemist/medical store (not a doctor), with any order the chemist booked. A chemist named after a person ("Verma Medical Store") is a chemist, not that doctor.
 
+stockReports: the MR's OWN sample stock changing outside a doctor visit.
+- kind "received": stock arrived from the company ("maal aa gaya", "stock aaya", "Gastrova ke 20 strip receive hue").
+- kind "out": stock leaving NOT to a doctor — expired, damaged, returned to the company, or lost/stolen ("5 strip expire ho gaye", "2 bottle toot gayi", "stock kam kar do"). reason: "expired" | "damaged" | "returned" | "lost", or "unspecified" if no reason was said. For "received", reason is null.
+- product, quantity and unit exactly as said; never guess a missing quantity or unit (null).
+- Samples GIVEN TO A DOCTOR are never stock reports — they go in that visit's samples. An order (POB) is not a stock report.
+- A note can contain only stock reports (no visits).
+
 Products: only the company's products from the shortlist. Doctors and MRs often mention competitor brands ("Dr X likhte hain Telma") — those are not ours: never put a competitor brand into detailed, samples or pobs, and never map it to a similar-sounding company product. Product mentions: as said, in Latin script (transliterate Devanagari). product.ref only when the mention clearly matches one product. A brand name without its strength/suffix ("Ostiva" for "Ostiva-D3", "Zentapra" for "Zentapra-40") is a clear match when only one shortlist product starts with it — give the ref. If a brand family has several variants (e.g. "Telmora-40" and "Telmora-H") and the note does not say which, use ref null.
 
 Patient privacy (strict): never output any detail that identifies an individual patient — no patient names, ages, phone numbers, addresses, or that patient's readings or case details. Describe questions generically ("safety in pregnancy", "dose for elderly patients"). Describing a group of patients is fine.
@@ -48,7 +55,7 @@ Never compute dates, totals, stock balances or unit conversions. Never invent an
 
 Example. Shortlist has D1 "Dr. Ramesh Iyer", D2 "Dr. Neha Kapoor" (Dermatologist, Saket), D3 "Dr. Amit Kapoor" (Ortho, Saket), P1 "Calzora", M1 "Sanjay Malhotra" (ABM).
 Note: "ABM sir ke saath Kapoor madam (skin wali) ko Calzora detail kiya, 5 strip diye, unhone pucha ek 70 saal ki patient Kamla ko de sakte hain kya. Parso fir aana hai"
-Output: {"visits":[{"doctor":{"mention":"Kapoor madam","ref":"D2","evidence":"skin wali"},"met":true,"dayOffset":0,"time":null,"jointWork":[{"mention":"ABM sir","ref":"M1"}],"detailed":[{"mention":"Calzora","ref":"P1"}],"samples":[{"product":{"mention":"Calzora","ref":"P1"},"quantity":5,"unit":"strip"}],"queries":[{"question":"Can it be given to elderly patients?","product":{"mention":"Calzora","ref":"P1"}}],"followUps":[{"action":"Visit again","due":{"kind":"days","amount":2,"weekday":null,"day":null,"month":null}}],"pobs":[],"confidence":0.9}],"chemistCalls":[],"adverseEvent":{"mentioned":false,"summary":null},"correction":{"isCorrection":false,"description":null}}`;
+Output: {"visits":[{"doctor":{"mention":"Kapoor madam","ref":"D2","evidence":"skin wali"},"met":true,"dayOffset":0,"time":null,"jointWork":[{"mention":"ABM sir","ref":"M1"}],"detailed":[{"mention":"Calzora","ref":"P1"}],"samples":[{"product":{"mention":"Calzora","ref":"P1"},"quantity":5,"unit":"strip"}],"queries":[{"question":"Can it be given to elderly patients?","product":{"mention":"Calzora","ref":"P1"}}],"followUps":[{"action":"Visit again","due":{"kind":"days","amount":2,"weekday":null,"day":null,"month":null}}],"pobs":[],"confidence":0.9}],"chemistCalls":[],"stockReports":[],"adverseEvent":{"mentioned":false,"summary":null},"correction":{"isCorrection":false,"description":null}}`;
 
 /** Per-MR shortlist block. Stable for a given MR and master-data version. */
 export function buildContextBlock(ctx: MrContext): string {

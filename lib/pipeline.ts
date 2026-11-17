@@ -4,7 +4,7 @@ import { loadMrContext, type MrContext } from "./context";
 import { addDays, istDate } from "./dates";
 import { validateEventDraft, type EventDraft } from "./events";
 import { extractNote } from "./extract";
-import { ExtractionSchema } from "./extraction-schema";
+import { parseStoredExtraction } from "./extraction-schema";
 import { interpret, type Plan, type RecentSample, type ReviewDraft, type Resolution } from "./interpret";
 import {
   InvalidProviderResponseError,
@@ -127,7 +127,7 @@ export async function retryMessage(prisma: PrismaClient, provider: ExtractionPro
   }
   const ctx = await loadMrContext(prisma, message.companyId, message.mrId);
   // Extraction already stored (the failure came after it): only re-decide.
-  if (ExtractionSchema.safeParse(message.extraction).success) return evaluateMessage(prisma, messageId, ctx);
+  if (parseStoredExtraction(message.extraction).success) return evaluateMessage(prisma, messageId, ctx);
   return extractAndEvaluate(prisma, provider, messageId, message.text, ctx);
 }
 
@@ -184,7 +184,7 @@ export async function evaluateMessage(
   const message = await prisma.message.findUniqueOrThrow({ where: { id: messageId }, include: messageInclude });
   if (!["RECEIVED", "NEEDS_REVIEW"].includes(message.status)) return message;
 
-  const parsed = ExtractionSchema.safeParse(message.extraction);
+  const parsed = parseStoredExtraction(message.extraction);
   if (!parsed.success) throw new Error(`Message ${messageId} has no valid extraction`);
 
   const ctx = preloadedCtx ?? (await loadMrContext(prisma, message.companyId, message.mrId));
@@ -320,6 +320,7 @@ async function syncReviewItems(tx: Prisma.TransactionClient, message: MessageWit
         assignee: d.assignee,
         detail: d.detail,
         blocking: d.blocking,
+        proposal: (d.proposal ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
         status: "OPEN",
       })),
     });

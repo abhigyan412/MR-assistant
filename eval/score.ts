@@ -74,6 +74,7 @@ export function withAutoRefs(extraction: Extraction, ctx: MrContext): { extracti
     c.chemist = chemist(c.chemist);
     for (const p of c.pobs) p.product = product(p.product);
   }
+  for (const sr of e.stockReports) sr.product = product(sr.product);
   return { extraction: e, auto };
 }
 
@@ -200,6 +201,21 @@ export function scoreCase(evalCase: EvalCase, modelExtraction: Extraction, ctx: 
       continue;
     }
     matchQuantities(`chemist call ${w.chemist}: pob`, w.pobs, got.pobs);
+  }
+
+  // ── Stock reports (stock received / out, outside a visit) ─────────────
+  const wantStock = expect.stockReports ?? [];
+  add("stock report count", extraction.stockReports.length === wantStock.length, false, `expected ${wantStock.length}, got ${extraction.stockReports.length}`);
+  for (const kind of ["received", "out"] as const) {
+    const want = wantStock.filter((w) => w.kind === kind);
+    const got = extraction.stockReports.filter((g) => g.kind === kind);
+    // An invented stock change is critical even though a manager approves it.
+    matchQuantities(`stock ${kind}`, want, got);
+    for (const w of want) {
+      if (w.reason === undefined) continue;
+      const g = got.find((x) => productMatches(w.product, x.product));
+      if (g) add(`stock ${kind} ${describe(w.product)}: reason`, (g.reason ?? null) === w.reason, false, `expected ${w.reason}, got ${g.reason}`);
+    }
   }
 
   // ── Flags, privacy, refs ──────────────────────────────────────────────

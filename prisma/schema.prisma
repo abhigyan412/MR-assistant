@@ -217,6 +217,7 @@ model ReviewItem {
   assignee     String // "MR" first; "MANAGER" for leftovers, doctor approval, adverse events
   detail       String? // the question shown on the card
   blocking     Boolean   @default(true) // false = informational (e.g. ADVERSE_EVENT): doesn't hold the DCR
+  proposal     Json? // STOCK_REPORT: the change the manager approves {direction, productId, quantity, unit, baseQuantity, reason}
   status       String    @default("OPEN") // OPEN | RESOLVED | DISMISSED
   resolution   Json?
   resolvedById String?

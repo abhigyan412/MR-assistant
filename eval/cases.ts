@@ -53,6 +53,8 @@ export interface EvalCase {
   expect?: {
     visits: VisitExpect[];
     chemistCalls?: ChemistCallExpect[];
+    // MR's own stock changing outside a visit (default: none)
+    stockReports?: { kind: "received" | "out"; reason?: string | null; product: ProductExpect; quantity: number | null; unit: string | null }[];
     adverseEvent?: boolean; // default false
     correction?: boolean; // default false
     forbidden?: string[]; // regexes that must not appear anywhere in the output (patient data)
@@ -413,6 +415,60 @@ export const CASES: EvalCase[] = [
       visits: [{ doctor: "DR-011", met: true }],
     },
     pipeline: { status: "PROCESSED", note: "a met visit with no products is valid" },
+  },
+  {
+    id: "N24",
+    kind: "text",
+    source: "invented",
+    covers: ["stock received from company (MR report -> manager approves)"],
+    note: "Aaj company se maal aa gaya — Zentapra ke 2 box aur Ostiva ke 12 sachet mile",
+    expect: {
+      visits: [],
+      stockReports: [
+        { kind: "received", product: ZEN, quantity: 2, unit: "box" },
+        { kind: "received", product: OST, quantity: 12, unit: "sachet" },
+      ],
+    },
+    pipeline: { status: "PROCESSED", reviewKinds: ["STOCK_REPORT"], note: "stock moves only after the manager approves" },
+  },
+  {
+    id: "N25",
+    kind: "text",
+    source: "invented",
+    covers: ["stock out with reasons (damaged, expired)"],
+    note: "Coughzen ki 2 bottle toot gayi, aur Calzora ke 5 strip expire ho gaye",
+    expect: {
+      visits: [],
+      stockReports: [
+        { kind: "out", reason: "damaged", product: COUGH, quantity: 2, unit: "bottle" },
+        { kind: "out", reason: "expired", product: CALZ, quantity: 5, unit: "strip" },
+      ],
+    },
+    pipeline: { status: "PROCESSED", reviewKinds: ["STOCK_REPORT"] },
+  },
+  {
+    id: "N26",
+    kind: "text",
+    source: "invented",
+    covers: ["stock out, no reason, unit not said (real user phrasing)"],
+    note: "Zentapra 40 ka 20 stock kam kar dijiye",
+    expect: {
+      visits: [],
+      stockReports: [{ kind: "out", reason: "unspecified", product: ZEN, quantity: 20, unit: null }],
+    },
+    pipeline: { status: "NEEDS_REVIEW", reviewKinds: ["UNIT_UNKNOWN"], note: "strip or box? asked before it goes to the manager" },
+  },
+  {
+    id: "N27",
+    kind: "text",
+    source: "invented",
+    covers: ["visit sample + stock out in one note (sample is NOT a stock report)"],
+    note: "Verma sir ko Zentapra ke 2 strip diye. Aur Ostiva ke 4 sachet expire ho gaye",
+    expect: {
+      visits: [{ doctor: VERMA, detailed: "any", samples: [{ product: ZEN, quantity: 2, unit: "strip" }] }],
+      stockReports: [{ kind: "out", reason: "expired", product: OST, quantity: 4, unit: "sachet" }],
+    },
+    pipeline: { status: "PROCESSED", reviewKinds: ["STOCK_REPORT"] },
   },
 
   // ── Voice placeholders: record these, save to eval/audio/<id>.webm ──────

@@ -33,6 +33,7 @@ export function extraction(partial: Partial<Extraction>): Extraction {
   return {
     visits: [],
     chemistCalls: [],
+    stockReports: [],
     adverseEvent: { mentioned: false, summary: null },
     correction: { isCorrection: false, description: null },
     ...partial,

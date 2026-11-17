@@ -24,6 +24,8 @@ export interface ReviewItem {
   detail: string | null;
   blocking: boolean;
   status: "OPEN" | "RESOLVED" | "DISMISSED";
+  resolution?: { action?: string } | null;
+  proposal?: { direction: "received" | "out"; productId: string; productName: string; quantity: number; unit: string; baseQuantity: number; reason: string | null } | null;
 }
 
 export interface Message {

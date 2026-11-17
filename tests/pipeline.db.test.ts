@@ -178,6 +178,56 @@ describe.skipIf(!url)("pipeline (database)", () => {
     expect(done.events.filter((e) => e.productId === ids["PRD-TEL40"]).map((e) => e.type).sort()).toEqual(["product_detailed", "sample_given"]);
   });
 
+  it("stock report: MR reports, stock moves only after the manager approves; MR can't approve; reject changes nothing", async () => {
+    const zen = { mention: "Zentapra", ref: refOf(ctx, "products", "PRD-ZEN40") };
+    const received = await note(
+      "m-stock-in",
+      "Zentapra ke 2 box aaye",
+      extraction({ stockReports: [{ kind: "received", reason: null, product: zen, quantity: 2, unit: "box" }] })
+    );
+    expect(received.message.status).toBe("PROCESSED");
+    const card = received.message.reviewItems.find((r) => r.kind === "STOCK_REPORT")!;
+    expect(card).toMatchObject({ assignee: "MANAGER", blocking: false, status: "OPEN" });
+    expect(await stockOf("PRD-ZEN40")).toBe(40); // not yet
+
+    await expect(resolveReviewItem(prisma, card.id, ids["MR-ROHIT"], { action: "approve" })).rejects.toThrow(/manager/);
+    await resolveReviewItem(prisma, card.id, ids["ABM-DELHI"], { action: "approve" });
+    expect(await stockOf("PRD-ZEN40")).toBe(60); // +2 boxes = 20 strips
+    await expect(resolveReviewItem(prisma, card.id, ids["ABM-DELHI"], { action: "approve" })).rejects.toThrow(/already/);
+    expect(await stockOf("PRD-ZEN40")).toBe(60);
+
+    const out = await note(
+      "m-stock-out",
+      "Zentapra ke 5 strip expire",
+      extraction({ stockReports: [{ kind: "out", reason: "expired", product: zen, quantity: 5, unit: "strip" }] })
+    );
+    const outCard = out.message.reviewItems.find((r) => r.kind === "STOCK_REPORT")!;
+    await resolveReviewItem(prisma, outCard.id, ids["ABM-DELHI"], { action: "reject" });
+    expect(await stockOf("PRD-ZEN40")).toBe(60);
+    const ev = await prisma.event.findFirst({ where: { messageId: "m-stock-in" } });
+    expect(ev).toMatchObject({ type: "sample_received", stockDelta: 20 });
+  });
+
+  it("stock out approval re-checks stock at approval time (never below zero)", async () => {
+    const cough = { mention: "Coughzen", ref: refOf(ctx, "products", "PRD-COUGH") };
+    const out = await note(
+      "m-cough-out",
+      "Coughzen ki 4 bottle toot gayi",
+      extraction({ stockReports: [{ kind: "out", reason: "damaged", product: cough, quantity: 4, unit: "bottle" }] })
+    );
+    const card = out.message.reviewItems.find((r) => r.kind === "STOCK_REPORT")!;
+    // Meanwhile the MR gives 3 of the 6 bottles to a doctor.
+    await note(
+      "m-cough-sample",
+      "Verma sir ko 3 Coughzen",
+      extraction({
+        visits: [visit({ doctor: { mention: "Verma sir", ref: refOf(ctx, "doctors", "DR-001"), evidence: null }, samples: [{ product: cough, quantity: 3, unit: "bottle" }] })],
+      })
+    );
+    await expect(resolveReviewItem(prisma, card.id, ids["ABM-DELHI"], { action: "approve" })).rejects.toThrow(/stock is now 3/);
+    expect(await stockOf("PRD-COUGH")).toBe(3);
+  });
+
   it("N04: ambiguous doctor + brand -> review cards; MR taps -> PROCESSED; alias learned for next time", async () => {
     const sharma = () =>
       extraction({

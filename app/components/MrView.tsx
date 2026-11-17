@@ -108,7 +108,11 @@ export function MrView({ mrId }: { mrId: string }) {
       setToast(
         isDuplicate
           ? "Already received — nothing counted twice."
-          : message.status === "PROCESSED"
+          : message.reviewItems.some((r) => r.kind === "STOCK_REPORT")
+            ? "Stock report sent to your manager for approval."
+            : message.status === "PROCESSED" && nothingRecorded(message)
+              ? "Nothing to record found — mention the doctor and what you detailed/gave, or a stock change (e.g. \"Gastrova ke 20 strip aaye\")."
+            : message.status === "PROCESSED"
             ? "Added to today's DCR."
             : message.status === "NEEDS_REVIEW"
               ? "A quick question before it goes into the DCR."
@@ -136,6 +140,13 @@ export function MrView({ mrId }: { mrId: string }) {
       setSending(false);
     }
   }
+
+  // Stock reports waiting for the manager, per product (base units, signed).
+  const pending = new Map<string, number>();
+  for (const m of messages)
+    for (const r of m.reviewItems)
+      if (r.kind === "STOCK_REPORT" && r.status === "OPEN" && r.proposal)
+        pending.set(r.proposal.productId, (pending.get(r.proposal.productId) ?? 0) + (r.proposal.direction === "received" ? 1 : -1) * r.proposal.baseQuantity);
 
   const openCards = messages.flatMap((m) =>
     m.reviewItems.filter((r) => r.status === "OPEN" && r.assignee === "MR").map((r) => ({ item: r, note: m.text }))
@@ -227,6 +238,16 @@ export function MrView({ mrId }: { mrId: string }) {
               <span className={`badge status-${m.status}`}>{STATUS_LABEL[m.status]}</span>
               {m.adverseEventFlag && <span className="badge warn">AE flagged</span>}
               {m.channel === "WEB_VOICE" && <span className="badge">🎤 Voice</span>}
+              {m.status === "PROCESSED" && nothingRecorded(m) && <span className="badge warn">Nothing recorded</span>}
+              {m.reviewItems
+                .filter((r) => r.kind === "STOCK_REPORT" && r.status !== "DISMISSED")
+                .map((r) => (
+                  <span key={r.id} className={`badge ${r.status === "OPEN" ? "warn" : ""}`}>
+                    {r.proposal?.direction === "received" ? "+" : "−"}
+                    {r.proposal?.quantity} {r.proposal?.unit} {r.proposal?.productName}:{" "}
+                    {r.status === "OPEN" ? "waiting for manager" : r.resolution?.action === "approve" ? "approved" : "rejected"}
+                  </span>
+                ))}
               <span className="msg-text">{m.text}</span>
               {m.transcript && m.transcript.trim() !== m.text.trim() && <span className="heard">Heard: “{m.transcript}”</span>}
               {m.audioKey && <AudioPlayback messageId={m.id} />}
@@ -258,6 +279,13 @@ export function MrView({ mrId }: { mrId: string }) {
                 <td>{s.brandName}</td>
                 <td className="num">
                   {s.balance} {s.baseUnit}
+                  {pending.get(s.productId) ? (
+                    <span className="muted small">
+                      {" "}
+                      ({pending.get(s.productId)! > 0 ? "+" : ""}
+                      {pending.get(s.productId)} pending)
+                    </span>
+                  ) : null}
                 </td>
               </tr>
             ))}
@@ -295,4 +323,10 @@ function AudioPlayback({ messageId }: { messageId: string }) {
       {error ?? "▶ Play recording"}
     </button>
   );
+}
+
+/** A processed note that produced no DCR entry and no question (e.g. small talk). */
+function nothingRecorded(m: Message & { events?: unknown[] }): boolean {
+  const events = m._count?.events ?? m.events?.length ?? 0;
+  return events === 0 && m.reviewItems.length === 0;
 }
