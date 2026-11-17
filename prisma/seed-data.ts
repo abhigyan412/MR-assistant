@@ -124,3 +124,30 @@ export const OPENING_STOCK: Record<string, Record<string, number>> = {
 
 // Date the opening stock is recorded (IST midnight start of the demo month).
 export const OPENING_STOCK_AT = "2026-11-01T00:00:00+05:30";
+
+// ── Datasets ────────────────────────────────────────────────────────────────
+// A dataset = one company's master data + opening stock. DELHI (above) is the
+// eval / test fixture and must stay stable so scores stay comparable;
+// VARANASI (prisma/demo-data.ts) is the live-demo world.
+
+export interface SeedDataset {
+  company: { code: string; name: string };
+  territories: readonly { code: string; name: string }[];
+  users: SeedUser[];
+  doctors: SeedDoctor[];
+  chemists: readonly { code: string; name: string; area: string; territory: string }[];
+  products: SeedProduct[];
+  openingStock: Record<string, Record<string, number>>;
+  openingStockAt: string;
+}
+
+export const DELHI: SeedDataset = {
+  company: COMPANY,
+  territories: TERRITORIES,
+  users: USERS,
+  doctors: DOCTORS,
+  chemists: CHEMISTS,
+  products: PRODUCTS,
+  openingStock: OPENING_STOCK,
+  openingStockAt: OPENING_STOCK_AT,
+};

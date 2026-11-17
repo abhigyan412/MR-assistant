@@ -34,6 +34,8 @@ export interface Message {
   adverseEventFlag: boolean;
   recordedAt: string;
   createdAt: string;
+  attempts: number;
+  lastAttemptAt: string;
   reviewItems: ReviewItem[];
   _count?: { events: number };
 }
@@ -77,12 +79,35 @@ export interface ManagerQueue {
   pendingDoctors: { id: string; name: string; specialty: string | null; area: string | null; addedBy: string | null }[];
 }
 
+/** Thrown when the request never got an answer (offline, slow network, timeout). */
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+// Longer than the server's LLM timeout + DB work, shorter than "MR gives up".
+const REQUEST_TIMEOUT_MS = 75_000;
+
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    throw new NetworkError(
+      err instanceof DOMException && err.name === "AbortError" ? "No answer from the server (timed out)" : "No connection"
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `Request failed (${res.status})`);
   return data as T;
@@ -95,6 +120,7 @@ export const api = {
   messages: (mrId: string) => call<Message[]>(`/api/messages?mrId=${encodeURIComponent(mrId)}`),
   sendNote: (body: { messageId: string; mrId: string; text: string; recordedAt: string }) =>
     post<{ message: Message; isDuplicate: boolean }>("/api/messages", body),
+  retry: (messageId: string) => post<Message>(`/api/messages/${encodeURIComponent(messageId)}/retry`, {}),
   recheck: (messageId: string) => post<Message>(`/api/messages/${encodeURIComponent(messageId)}/recheck`, {}),
   resolve: (itemId: string, actorId: string, resolution: unknown) =>
     post<Message>(`/api/review-items/${encodeURIComponent(itemId)}/resolve`, { actorId, resolution }),
@@ -112,6 +138,9 @@ export const api = {
 export function todayIst(): string {
   return new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
 }
+
+/** Same window as the server's STALE_PROCESSING_MS: after this a RECEIVED note may be retried. */
+export const STALE_PROCESSING_MS = 2 * 60_000;
 
 export function newId(): string {
   return crypto.randomUUID();

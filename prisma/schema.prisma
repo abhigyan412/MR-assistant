@@ -185,6 +185,11 @@ model Message {
   promptVersion    String?
   createdAt        DateTime      @default(now())
   processedAt      DateTime?
+  // Processing attempts (1 = first submit). A RECEIVED message whose last
+  // attempt is older than the stale window was interrupted (request dropped,
+  // function killed) and may be retried; a FAILED one may always be retried.
+  attempts         Int           @default(1)
+  lastAttemptAt    DateTime      @default(now())
   events           Event[]
   reviewItems      ReviewItem[]
 

@@ -76,12 +76,60 @@ export async function processNote(
     throw err;
   }
 
-  // 2. Extract.
+  // 2. Extract, 3. decide.
   const ctx = await loadMrContext(prisma, mr.companyId, mr.id);
+  return { message: await extractAndEvaluate(prisma, provider, input.messageId, input.text, ctx), isDuplicate: false };
+}
+
+/** A RECEIVED message whose last attempt is older than this was interrupted. */
+export const STALE_PROCESSING_MS = 2 * 60_000;
+
+export class RetryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryError";
+  }
+}
+
+/**
+ * Re-run a note that FAILED (LLM timeout / provider error) or got stuck in
+ * RECEIVED (the request died mid-way). The note text is never lost: it was
+ * stored when the id was claimed. Claiming the retry is atomic, so a double
+ * tap or two devices can't process the same note twice.
+ */
+export async function retryMessage(prisma: PrismaClient, provider: ExtractionProvider, messageId: string): Promise<MessageWithDetails> {
+  const message = await prisma.message.findUnique({ where: { id: messageId } });
+  if (!message) throw new NotFoundError(`Message ${messageId} not found`);
+  const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS);
+  const claimed = await prisma.message.updateMany({
+    where: {
+      id: messageId,
+      OR: [{ status: "FAILED" }, { status: "RECEIVED", lastAttemptAt: { lt: staleBefore } }],
+    },
+    data: { status: "RECEIVED", errorReason: null, attempts: { increment: 1 }, lastAttemptAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    throw new RetryError(
+      message.status === "RECEIVED" ? "This note is still being processed — try again in a minute." : `Nothing to retry (note is ${message.status}).`
+    );
+  }
+  const ctx = await loadMrContext(prisma, message.companyId, message.mrId);
+  // Extraction already stored (the failure came after it): only re-decide.
+  if (ExtractionSchema.safeParse(message.extraction).success) return evaluateMessage(prisma, messageId, ctx);
+  return extractAndEvaluate(prisma, provider, messageId, message.text, ctx);
+}
+
+async function extractAndEvaluate(
+  prisma: PrismaClient,
+  provider: ExtractionProvider,
+  messageId: string,
+  text: string,
+  ctx: MrContext
+): Promise<MessageWithDetails> {
   try {
-    const outcome = await extractNote(provider, ctx, input.text);
+    const outcome = await extractNote(provider, ctx, text);
     await prisma.message.update({
-      where: { id: input.messageId },
+      where: { id: messageId },
       data: {
         extraction: outcome.extraction as unknown as Prisma.InputJsonValue,
         rawModelOutput: (outcome.result.rawText ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
@@ -97,8 +145,8 @@ export async function processNote(
       err instanceof InvalidProviderResponseError;
     if (!known) throw err;
     const raw = err instanceof InvalidProviderResponseError ? err.raw : null;
-    const failed = await prisma.message.update({
-      where: { id: input.messageId },
+    return prisma.message.update({
+      where: { id: messageId },
       data: {
         status: "FAILED",
         errorReason: err.message,
@@ -107,12 +155,8 @@ export async function processNote(
       },
       include: messageInclude,
     });
-    return { message: failed, isDuplicate: false };
   }
-
-  // 3. Decide.
-  const message = await evaluateMessage(prisma, input.messageId, ctx);
-  return { message, isDuplicate: false };
+  return evaluateMessage(prisma, messageId, ctx);
 }
 
 /**

@@ -44,13 +44,22 @@ npm test                    # unit tests: dates, events, matching, interpret, sc
 ```
 
 Database integration tests (the real pipeline against Postgres, with a scripted
-LLM) run when `TEST_DATABASE_URL` is set. A throwaway local database works:
+LLM) run when `TEST_DATABASE_URL` is set. They run against the Neon `test`
+branch (a copy-on-write branch of production; no Docker). Every test
+TRUNCATEs all tables, so the suite refuses to start if `TEST_DATABASE_URL`
+is the app's `DATABASE_URL`.
 
 ```bash
-docker run -d --name mr-assistant-testdb -e POSTGRES_PASSWORD=testpw -e POSTGRES_DB=mr_test -p 55432:5432 postgres:16
-DATABASE_URL=postgresql://postgres:testpw@localhost:55432/mr_test npx prisma migrate deploy
-TEST_DATABASE_URL=postgresql://postgres:testpw@localhost:55432/mr_test npm test
+# once: create the branch (expires after 7 days; recreate when gone)
+neon branches create --name test --parent production --expires-at <ISO date>
+# never `neon checkout test` here: it re-links the project and rewrites .env
+
+TEST_URL="$(neon connection-string test)"      # direct (non-pooled) URL
+DATABASE_URL="$TEST_URL" DATABASE_URL_UNPOOLED="$TEST_URL" npx prisma migrate deploy
+TEST_DATABASE_URL="$TEST_URL" npx vitest run tests/pipeline.db.test.ts --maxWorkers=1
 ```
+
+Each test reseeds over the network, so the suite takes a few minutes.
 
 On a machine with little free RAM, add `--no-file-parallelism --maxWorkers=1`
 to the test command; `next build` may need `experimental: { cpus: 1 }`.

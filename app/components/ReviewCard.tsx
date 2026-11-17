@@ -34,7 +34,7 @@ export function ReviewCard({
   noteText: string;
   actorId: string;
   catalog: Catalog | null;
-  onDone: () => void;
+  onDone: () => void | Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,9 +50,18 @@ export function ReviewCard({
     setError(null);
     try {
       await api.resolve(item.id, actorId, resolution);
-      onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed");
+      const msg = e instanceof Error ? e.message : "Failed";
+      // Answered already (double tap, or a sibling card answered it): not an error, just refresh.
+      if (!/already (RESOLVED|DISMISSED)/.test(msg)) {
+        setError(msg);
+        setBusy(false);
+        return;
+      }
+    }
+    // Stay disabled until the list has refreshed, so the card can't be tapped twice meanwhile.
+    try {
+      await onDone();
     } finally {
       setBusy(false);
     }

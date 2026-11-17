@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { contextFromSeed } from "@/lib/context";
 import { matchDoctor, matchProduct, transliterate } from "@/lib/matching";
+import { VARANASI } from "@/prisma/demo-data";
 
 const ctx = contextFromSeed("MR-ROHIT");
 const none = new Map<string, string>();
@@ -63,5 +64,31 @@ describe("matcher — sound-alike and Devanagari spellings", () => {
 
   it("Devanagari for a shared surname still asks", () => {
     expect(doctor("शर्मा जी")).toMatchObject({ status: "ambiguous" });
+  });
+});
+
+describe("Varanasi demo data — same traps as the eval fixture", () => {
+  const vns = contextFromSeed("MR-AMIT", VARANASI);
+  const doc = (m: string) => matchDoctor(m, null, null, vns, none);
+  const prod = (m: string) => matchProduct(m, null, vns, none);
+
+  it("Amit's shortlist never includes Cantt (other MR) doctors or chemists", () => {
+    expect(vns.doctors.map((d) => d.code)).not.toContain("VD-51");
+    expect(vns.chemists.map((c) => c.code)).not.toContain("VC-51");
+  });
+
+  it("'Tiwari sir' is Dr. Rajesh Tiwari (the Cantt Tiwari is out of territory)", () => {
+    expect(doc("Tiwari sir")).toMatchObject({ status: "matched", id: "VD-01" });
+  });
+
+  it("shared surnames and the Glimora family still ask", () => {
+    expect(doc("Singh madam").status).toBe("ambiguous");
+    expect(doc("Agarwal sir").status).toBe("ambiguous");
+    expect(prod("Glimora").status).toBe("ambiguous");
+  });
+
+  it("new Dr Rekha Upadhyay is not matched to Dr Manoj Upadhyay; Telma is not ours", () => {
+    expect(doc("Dr Rekha Upadhyay, ortho").status).not.toBe("matched");
+    expect(prod("Telma").status).not.toBe("matched");
   });
 });

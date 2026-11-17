@@ -17,11 +17,15 @@ export function AdminView({ adminId, mrs }: { adminId: string; mrs: Person[] }) 
 
   useEffect(() => {
     if (!mrId) return;
-    api.catalog(mrId).then((c) => {
-      setCatalog(c);
-      setProductId(c.products[0]?.id ?? "");
-      setUnit(c.products[0]?.baseUnit ?? "");
-    });
+    setCatalog(null);
+    api
+      .catalog(mrId)
+      .then((c) => {
+        setCatalog(c);
+        setProductId(c.products[0]?.id ?? "");
+        setUnit(c.products[0]?.baseUnit ?? "");
+      })
+      .catch((e) => setMsg(e instanceof Error ? e.message : "Could not load products"));
   }, [mrId]);
 
   const product = catalog?.products.find((p) => p.id === productId);

@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { CHEMISTS, DOCTORS, PRODUCTS, TERRITORIES, USERS } from "../prisma/seed-data";
+import { DELHI, type SeedDataset } from "../prisma/seed-data";
 
 // The per-MR shortlist the LLM sees: only doctors/chemists in the MR's
 // territory, the company's active products, and the MR's manager chain.
@@ -55,16 +55,16 @@ function withRefs<T>(prefix: string, items: T[], key: (t: T) => string): (T & { 
     .map((item, i) => ({ ...item, ref: `${prefix}${i + 1}` }));
 }
 
-/** Context built straight from seed-data (ids = codes). Used by the eval. */
-export function contextFromSeed(mrCode: string): MrContext {
-  const mr = USERS.find((u) => u.code === mrCode && u.role === "MR");
+/** Context built straight from a seed dataset (ids = codes). Used by the eval. */
+export function contextFromSeed(mrCode: string, data: SeedDataset = DELHI): MrContext {
+  const mr = data.users.find((u) => u.code === mrCode && u.role === "MR");
   if (!mr || !mr.territory) throw new Error(`Unknown MR ${mrCode}`);
-  const territory = TERRITORIES.find((t) => t.code === mr.territory)!;
+  const territory = data.territories.find((t) => t.code === mr.territory)!;
 
   const managers: Omit<CtxManager, "ref">[] = [];
   let current = mr.manager;
   while (current) {
-    const m = USERS.find((u) => u.code === current)!;
+    const m = data.users.find((u) => u.code === current)!;
     managers.push({ id: m.code, code: m.code, name: m.name, role: m.role });
     current = m.manager;
   }
@@ -74,7 +74,7 @@ export function contextFromSeed(mrCode: string): MrContext {
     territoryName: territory.name,
     doctors: withRefs(
       "D",
-      DOCTORS.filter((d) => d.territory === mr.territory).map((d) => ({
+      data.doctors.filter((d) => d.territory === mr.territory).map((d) => ({
         id: d.code,
         code: d.code,
         name: d.name,
@@ -86,7 +86,7 @@ export function contextFromSeed(mrCode: string): MrContext {
     ),
     products: withRefs(
       "P",
-      PRODUCTS.map((p) => ({
+      data.products.map((p) => ({
         id: p.code,
         code: p.code,
         brandName: p.brandName,
@@ -100,7 +100,7 @@ export function contextFromSeed(mrCode: string): MrContext {
     managers: managers.map((m, i) => ({ ...m, ref: `M${i + 1}` })),
     chemists: withRefs(
       "C",
-      CHEMISTS.filter((c) => c.territory === mr.territory).map((c) => ({
+      data.chemists.filter((c) => c.territory === mr.territory).map((c) => ({
         id: c.code,
         code: c.code,
         name: c.name,

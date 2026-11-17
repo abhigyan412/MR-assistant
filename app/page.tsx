@@ -26,6 +26,10 @@ export default function Home() {
   useEffect(() => {
     if (!options.some((o) => o.id === personId)) setPersonId(options[0]?.id ?? "");
   }, [tab, people]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Only render a view for a person who belongs to this tab: right after a
+  // tab switch personId still holds the previous tab's person for one render
+  // (the manager view used to fetch /api/managers/<MR id>/queue -> 404).
+  const activeId = options.some((o) => o.id === personId) ? personId : "";
 
   return (
     <main>
@@ -48,9 +52,9 @@ export default function Home() {
         </select>
       </header>
       {error && <p className="error">{error}</p>}
-      {personId && tab === "MR" && <MrView key={personId} mrId={personId} />}
-      {personId && tab === "MANAGER" && <ManagerView key={personId} managerId={personId} />}
-      {personId && tab === "ADMIN" && <AdminView adminId={personId} mrs={people.filter((p) => p.role === "MR")} />}
+      {activeId && tab === "MR" && <MrView key={activeId} mrId={activeId} />}
+      {activeId && tab === "MANAGER" && <ManagerView key={activeId} managerId={activeId} />}
+      {activeId && tab === "ADMIN" && <AdminView adminId={activeId} mrs={people.filter((p) => p.role === "MR")} />}
     </main>
   );
 }

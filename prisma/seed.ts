@@ -1,31 +1,25 @@
 import { PrismaClient } from "@prisma/client";
 import { istDate } from "../lib/dates";
 import { validateEventDraft } from "../lib/events";
-import {
-  CHEMISTS,
-  COMPANY,
-  DOCTORS,
-  OPENING_STOCK,
-  OPENING_STOCK_AT,
-  PRODUCTS,
-  TERRITORIES,
-  USERS,
-} from "./seed-data";
+import { VARANASI } from "./demo-data";
+import { DELHI, type SeedDataset } from "./seed-data";
+
+export const DATASETS: Record<string, SeedDataset> = { delhi: DELHI, varanasi: VARANASI };
 
 // Idempotent: master data is upserted by code; opening stock is written once
 // per MR through a deterministic ADMIN message id (the same claim-by-primary-key
 // idempotency the note pipeline uses), so re-running never doubles stock.
 
-export async function seed(prisma: PrismaClient) {
+export async function seed(prisma: PrismaClient, data: SeedDataset = DELHI) {
   const company = await prisma.company.upsert({
-    where: { code: COMPANY.code },
-    update: { name: COMPANY.name },
-    create: COMPANY,
+    where: { code: data.company.code },
+    update: { name: data.company.name },
+    create: data.company,
   });
   const companyId = company.id;
 
   const territoryIds: Record<string, string> = {};
-  for (const t of TERRITORIES) {
+  for (const t of data.territories) {
     const row = await prisma.territory.upsert({
       where: { companyId_code: { companyId, code: t.code } },
       update: { name: t.name },
@@ -36,7 +30,7 @@ export async function seed(prisma: PrismaClient) {
 
   // Users in order so managers exist before their reports.
   const userIds: Record<string, string> = {};
-  for (const u of USERS) {
+  for (const u of data.users) {
     const data = {
       name: u.name,
       role: u.role,
@@ -51,7 +45,7 @@ export async function seed(prisma: PrismaClient) {
     userIds[u.code] = row.id;
   }
 
-  for (const d of DOCTORS) {
+  for (const d of data.doctors) {
     const data = {
       name: d.name,
       specialty: d.specialty,
@@ -67,7 +61,7 @@ export async function seed(prisma: PrismaClient) {
     });
   }
 
-  for (const c of CHEMISTS) {
+  for (const c of data.chemists) {
     const data = { name: c.name, area: c.area, territoryId: territoryIds[c.territory], status: "ACTIVE" as const };
     await prisma.chemist.upsert({
       where: { companyId_externalCode: { companyId, externalCode: c.code } },
@@ -77,7 +71,7 @@ export async function seed(prisma: PrismaClient) {
   }
 
   const productIds: Record<string, string> = {};
-  for (const p of PRODUCTS) {
+  for (const p of data.products) {
     const data = { brandName: p.brandName, composition: p.composition, baseUnit: p.baseUnit, active: true };
     const row = await prisma.product.upsert({
       where: { companyId_code: { companyId, code: p.code } },
@@ -95,8 +89,8 @@ export async function seed(prisma: PrismaClient) {
   }
 
   // Opening stock: one ADMIN message per MR, one sample_received per product.
-  const openingAt = new Date(OPENING_STOCK_AT);
-  for (const [mrCode, stock] of Object.entries(OPENING_STOCK)) {
+  const openingAt = new Date(data.openingStockAt);
+  for (const [mrCode, stock] of Object.entries(data.openingStock)) {
     const messageId = `seed-opening-stock-${mrCode}`;
     const exists = await prisma.message.findUnique({ where: { id: messageId } });
     if (exists) continue;
@@ -116,7 +110,7 @@ export async function seed(prisma: PrismaClient) {
         },
       });
       for (const [productCode, quantity] of Object.entries(stock)) {
-        const product = PRODUCTS.find((p) => p.code === productCode)!;
+        const product = data.products.find((p) => p.code === productCode)!;
         const draft = {
           type: "sample_received",
           payload: { quantity, unit: product.baseUnit, note: "Opening stock", source: "opening_stock" },
@@ -154,8 +148,15 @@ export async function seed(prisma: PrismaClient) {
 
 // CLI entry (`npx prisma db seed` / `tsx prisma/seed.ts`); tests import seed().
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("prisma/seed.ts")) {
+  // `tsx prisma/seed.ts [delhi|varanasi]` — default delhi (the eval/test fixture).
+  const name = process.argv[2] ?? "delhi";
+  const dataset = DATASETS[name];
+  if (!dataset) {
+    console.error(`Unknown dataset "${name}" (expected ${Object.keys(DATASETS).join(", ")})`);
+    process.exit(1);
+  }
   const prisma = new PrismaClient();
-  seed(prisma)
+  seed(prisma, dataset)
     .then((counts) => console.log("Seeded:", counts))
     .catch((err) => {
       console.error(err);

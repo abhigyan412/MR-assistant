@@ -476,7 +476,7 @@ const UNIT_ALIASES: Record<string, string> = {
   boxes: "box", dabba: "box", dabbe: "box", dibba: "box", dibbe: "box", "डब्बा": "box", "डब्बे": "box", "डिब्बा": "box", "डिब्बे": "box", "बॉक्स": "box",
   // sachet
   sachets: "sachet", sache: "sachet", sachey: "sachet", satchet: "sachet", satchets: "sachet", shachet: "sachet",
-  sashe: "sachet", "सैशे": "sachet", "सैशै": "sachet", "साशे": "sachet",
+  sashe: "sachet","सैशे": "sachet", "सैशै": "sachet", "साशे": "sachet", "सचेत": "sachet", "सैचेट": "sachet", "सेशे": "sachet",
   // packet (kept distinct, see above)
   packets: "packet", pkt: "packet", pkts: "packet", paket: "packet", "पैकेट": "packet",
   // others

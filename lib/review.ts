@@ -143,8 +143,26 @@ export async function resolveReviewItem(
     }
   }
 
-  await prisma.reviewItem.update({
-    where: { id: itemId },
+  // One note can raise the same question twice — "Telmora" detailed AND
+  // sampled gives two "Which product?" cards for one word. One answer covers
+  // every open card of the same kind for the same words in this note.
+  const family = kind.startsWith("DOCTOR")
+    ? ["DOCTOR_AMBIGUOUS", "DOCTOR_NOT_FOUND"]
+    : kind.startsWith("PRODUCT")
+      ? ["PRODUCT_AMBIGUOUS", "PRODUCT_NOT_FOUND"]
+      : kind === "MANAGER_AMBIGUOUS"
+        ? ["MANAGER_AMBIGUOUS"]
+        : [];
+  const shareAnswer = (resolution.action === "pick" || resolution.action === "drop") && family.length > 0 && item.rawMention;
+  const siblings = shareAnswer
+    ? await prisma.reviewItem.findMany({
+        where: { messageId: message.id, status: "OPEN", id: { not: itemId }, kind: { in: family }, rawMention: item.rawMention },
+        select: { id: true },
+      })
+    : [];
+
+  await prisma.reviewItem.updateMany({
+    where: { id: { in: [itemId, ...siblings.map((s) => s.id)] } },
     data: { status: "RESOLVED", resolution: stored, resolvedById: actorId, resolvedAt: now },
   });
   return evaluateMessage(prisma, message.id);

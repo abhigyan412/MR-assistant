@@ -44,3 +44,4 @@ next-env.d.ts
 /eval/audio/*
 !/eval/audio/.gitkeep
 .neon
+!.env.example

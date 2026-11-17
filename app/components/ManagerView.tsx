@@ -11,10 +11,17 @@ export function ManagerView({ managerId }: { managerId: string }) {
   const [queue, setQueue] = useState<ManagerQueue | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(() => {
-    api.queue(managerId).then(setQueue).catch((e) => setError(String(e)));
-  }, [managerId]);
-  useEffect(refresh, [refresh]);
+  const refresh = useCallback(
+    () =>
+      api
+        .queue(managerId)
+        .then(setQueue)
+        .catch((e) => setError(String(e))),
+    [managerId]
+  );
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   if (!queue) return <p className="muted">{error ?? "Loading…"}</p>;
   return (

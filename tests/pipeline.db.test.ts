@@ -1,19 +1,52 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { PrismaClient } from "@prisma/client";
+import { parse as parseEnv } from "dotenv";
 import { contextFromSeed } from "@/lib/context";
 import type { Extraction } from "@/lib/extraction-schema";
 import { ProviderTimeoutError, type ExtractionProvider } from "@/lib/llm";
-import { evaluateMessage, processNote } from "@/lib/pipeline";
+import { evaluateMessage, processNote, retryMessage, RetryError, STALE_PROCESSING_MS } from "@/lib/pipeline";
 import { decideDoctor, resolveReviewItem } from "@/lib/review";
 import { addSampleReceipt, getDcr, getStock, managerQueue } from "@/lib/views";
 import { seed } from "@/prisma/seed";
 import { extraction, n01, noDue, refOf, visit } from "./fixtures";
 
-// Integration tests against a real Postgres. Run with:
-//   TEST_DATABASE_URL=postgresql://postgres:testpw@localhost:55432/mr_test npx vitest run
+// Integration tests against a real Postgres: the Neon `test` branch (no Docker).
+//   TEST_DATABASE_URL="$(neon connection-string test)" npx vitest run tests/pipeline.db.test.ts
 // (see README "Tests"). Skipped when TEST_DATABASE_URL is not set.
+// Every test TRUNCATEs all tables, so it refuses to run against the app's database.
 
 const url = process.env.TEST_DATABASE_URL;
+assertNotAppDatabase(url);
+
+function assertNotAppDatabase(testUrl: string | undefined) {
+  if (!testUrl) return;
+  // vitest doesn't load .env; read it (and the process env) for the app's URLs.
+  let fileEnv: Record<string, string> = {};
+  try {
+    fileEnv = parseEnv(readFileSync(".env"));
+  } catch {
+    /* no .env file */
+  }
+  // Same Neon endpoint (pooled "-pooler" or direct) + same database = same data.
+  const key = (u: string) => {
+    try {
+      const p = new URL(u);
+      return `${p.hostname.replace("-pooler", "")}/${p.pathname.replace(/^\//, "")}`;
+    } catch {
+      return u;
+    }
+  };
+  const app = ["DATABASE_URL", "DATABASE_URL_UNPOOLED"]
+    .flatMap((k) => [process.env[k], fileEnv[k]])
+    .filter((u): u is string => !!u);
+  if (app.some((u) => key(u) === key(testUrl))) {
+    throw new Error("TEST_DATABASE_URL points at the app's database (DATABASE_URL). Refusing: these tests TRUNCATE every table. Use the Neon `test` branch.");
+  }
+}
+// A remote database (Neon test branch) costs a network round trip per query;
+// the per-test reset + seed is dozens of them.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 const ctx = contextFromSeed("MR-ROHIT"); // refs match the DB context (same ordering by code)
 const AT = new Date("2026-11-18T11:00:00+05:30");
 
@@ -90,6 +123,59 @@ describe.skipIf(!url)("pipeline (database)", () => {
     expect(message.status).toBe("FAILED");
     expect(message.errorReason).toMatch(/timed out/);
     expect(message.events).toHaveLength(0);
+  });
+
+  it("retry: a FAILED note keeps its text and is re-processed once; a second retry is refused", async () => {
+    await note("m-retry", "retry me", new ProviderTimeoutError("timed out"));
+    scripted.set("retry me", n01(ctx)); // the provider works now
+    const done = await retryMessage(prisma, provider, "m-retry");
+    expect(done.status).toBe("PROCESSED");
+    expect(done.text).toBe("retry me");
+    expect(done.attempts).toBe(2);
+    expect(await stockOf("PRD-ZEN40")).toBe(37);
+    await expect(retryMessage(prisma, provider, "m-retry")).rejects.toBeInstanceOf(RetryError);
+    expect(await stockOf("PRD-ZEN40")).toBe(37);
+  });
+
+  it("retry: a note still processing is refused; one stuck past the stale window is re-processed", async () => {
+    await prisma.message.create({
+      data: {
+        id: "m-stuck",
+        companyId: (await prisma.company.findFirstOrThrow()).id,
+        mrId: ids["MR-ROHIT"],
+        channel: "WEB_TEXT",
+        recordedAt: AT,
+        text: "stuck note",
+        status: "RECEIVED",
+      },
+    });
+    scripted.set("stuck note", n01(ctx));
+    await expect(retryMessage(prisma, provider, "m-stuck")).rejects.toThrow(/still being processed/);
+    await prisma.message.update({ where: { id: "m-stuck" }, data: { lastAttemptAt: new Date(Date.now() - STALE_PROCESSING_MS - 1000) } });
+    expect((await retryMessage(prisma, provider, "m-stuck")).status).toBe("PROCESSED");
+  });
+
+  it("one answer covers the same question asked twice in a note ('Telmora' detailed AND sampled)", async () => {
+    const telmora = { mention: "Telmora", ref: null };
+    const { message } = await note(
+      "m-twice",
+      "Verma sir ko Telmora detail kiya, 2 strip diye",
+      extraction({
+        visits: [
+          visit({
+            doctor: { mention: "Verma sir", ref: refOf(ctx, "doctors", "DR-001"), evidence: null },
+            detailed: [telmora],
+            samples: [{ product: telmora, quantity: 2, unit: "strip" }],
+          }),
+        ],
+      })
+    );
+    const cards = message.reviewItems.filter((r) => r.status === "OPEN");
+    expect(cards.map((c) => c.kind)).toEqual(["PRODUCT_AMBIGUOUS", "PRODUCT_AMBIGUOUS"]);
+    const done = await resolveReviewItem(prisma, cards[0].id, ids["MR-ROHIT"], { action: "pick", id: ids["PRD-TEL40"] });
+    expect(done.status).toBe("PROCESSED");
+    expect(done.reviewItems.every((r) => r.status === "RESOLVED")).toBe(true);
+    expect(done.events.filter((e) => e.productId === ids["PRD-TEL40"]).map((e) => e.type).sort()).toEqual(["product_detailed", "sample_given"]);
   });
 
   it("N04: ambiguous doctor + brand -> review cards; MR taps -> PROCESSED; alias learned for next time", async () => {

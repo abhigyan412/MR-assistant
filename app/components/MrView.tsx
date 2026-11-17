@@ -1,9 +1,30 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, newId, todayIst, type Catalog, type Dcr, type Message, type StockRow } from "../client";
+import { api, NetworkError, newId, STALE_PROCESSING_MS, todayIst, type Catalog, type Dcr, type Message, type StockRow } from "../client";
 import { DcrView } from "./DcrView";
 import { ReviewCard } from "./ReviewCard";
+
+// An unsent draft survives a reload / dropped connection on this device.
+const DRAFT_KEY = "mr-assistant:draft";
+function loadDraft(): { id: string; text: string } | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as { id: string; text: string }) : null;
+  } catch {
+    return null;
+  }
+}
+function saveDraft(d: { id: string; text: string } | null) {
+  try {
+    if (d && d.text.trim()) localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* storage unavailable: draft just isn't persisted */
+  }
+}
+
+const isStale = (m: Message) => m.status === "RECEIVED" && Date.now() - new Date(m.lastAttemptAt).getTime() > STALE_PROCESSING_MS;
 
 const STATUS_LABEL: Record<Message["status"], string> = {
   RECEIVED: "Processing",
@@ -26,6 +47,16 @@ export function MrView({ mrId }: { mrId: string }) {
   // when recording starts), so any retry of the same note reuses it.
   const draftId = useRef<string | null>(null);
   const last = useRef<{ messageId: string; text: string; recordedAt: string } | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
+
+  // Restore an unsent draft (same id, so sending it later can't double count).
+  useEffect(() => {
+    const d = loadDraft();
+    if (d) {
+      draftId.current = d.id;
+      setText(d.text);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const [m, d, s] = await Promise.all([api.messages(mrId), api.dcr(mrId, date), api.stock(mrId)]);
@@ -39,7 +70,30 @@ export function MrView({ mrId }: { mrId: string }) {
     api.catalog(mrId).then(setCatalog).catch(() => setCatalog(null));
   }, [refresh, mrId]);
 
-  async function send(payload: { messageId: string; text: string; recordedAt: string }) {
+  // While any note is processing, keep checking (a dropped request may still finish on the server).
+  const processing = messages.some((m) => m.status === "RECEIVED" && !isStale(m));
+  useEffect(() => {
+    if (!processing) return;
+    const t = setInterval(() => refresh().catch(() => undefined), 4000);
+    return () => clearInterval(t);
+  }, [processing, refresh]);
+
+  async function retry(messageId: string) {
+    setRetrying(messageId);
+    setToast(null);
+    try {
+      const m = await api.retry(messageId);
+      setToast(m.status === "FAILED" ? `Still failing: ${m.errorReason ?? "error"}` : "Retried.");
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "Retry failed");
+    } finally {
+      setRetrying(null);
+      await refresh().catch(() => undefined);
+    }
+  }
+
+  /** Returns true when the server has the note (whatever its status), false when it never arrived. */
+  async function send(payload: { messageId: string; text: string; recordedAt: string }): Promise<boolean> {
     setSending(true);
     setToast(null);
     try {
@@ -57,8 +111,21 @@ export function MrView({ mrId }: { mrId: string }) {
                 : STATUS_LABEL[message.status]
       );
       await refresh();
+      return true;
     } catch (e) {
+      if (e instanceof NetworkError) {
+        // The server may still have it (slow network): check before calling it lost.
+        const latest = await api.messages(mrId).catch(() => null);
+        if (latest) setMessages(latest);
+        if (latest?.some((m) => m.id === payload.messageId)) {
+          setToast("Slow network — your note arrived and is being processed.");
+          return true;
+        }
+        setToast(`${e.message}. Your note is kept here — tap Send again; it won't be counted twice.`);
+        return false;
+      }
       setToast(e instanceof Error ? e.message : "Send failed");
+      return false;
     } finally {
       setSending(false);
     }
@@ -79,6 +146,7 @@ export function MrView({ mrId }: { mrId: string }) {
           onChange={(e) => {
             if (!draftId.current && e.target.value.trim()) draftId.current = newId();
             setText(e.target.value);
+            saveDraft(draftId.current ? { id: draftId.current, text: e.target.value } : null);
           }}
         />
         <div className="row">
@@ -87,9 +155,12 @@ export function MrView({ mrId }: { mrId: string }) {
             disabled={sending || !text.trim()}
             onClick={async () => {
               const payload = { messageId: draftId.current ?? newId(), text: text.trim(), recordedAt: new Date().toISOString() };
-              await send(payload);
-              setText("");
-              draftId.current = null;
+              draftId.current = payload.messageId;
+              if (await send(payload)) {
+                setText("");
+                draftId.current = null;
+                saveDraft(null);
+              }
             }}
           >
             {sending ? "Sending…" : "Send"}
@@ -117,6 +188,12 @@ export function MrView({ mrId }: { mrId: string }) {
               {m.adverseEventFlag && <span className="badge warn">AE flagged</span>}
               <span className="msg-text">{m.text}</span>
               {m.status === "FAILED" && <span className="error"> {m.errorReason}</span>}
+              {isStale(m) && <span className="error"> Taking too long — it may have been interrupted.</span>}
+              {(m.status === "FAILED" || isStale(m)) && (
+                <button className="link" disabled={retrying === m.id} onClick={() => retry(m.id)}>
+                  {retrying === m.id ? "Retrying…" : "Retry"}
+                </button>
+              )}
             </li>
           ))}
           {messages.length === 0 && <li className="muted">No notes yet.</li>}

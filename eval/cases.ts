@@ -238,7 +238,9 @@ export const CASES: EvalCase[] = [
     covers: ["patient #2 (name + age)", "adverse event"],
     note: "Qureshi sir bole ek bacche Aarav (5 saal) ko Coughzen se rash ho gaya, company se safety data mangwaya hai",
     expect: {
-      visits: [{ doctor: QURESHI, detailed: "any", queries: [{ product: COUGH }], followUps: "any" }],
+      // "company se safety data mangwaya" reads as the AE follow-up, not
+      // necessarily a doctor question: a query is optional here.
+      visits: [{ doctor: QURESHI, detailed: "any", queries: "any", followUps: "any" }],
       adverseEvent: true,
       forbidden: ["Aarav", "\\b5[- ]?(saal|year|yr)"],
     },
